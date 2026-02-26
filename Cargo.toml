@@ -1,0 +1,22 @@
+[package]
+name = "q-gui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.33.3"
+egui = "0.33.3"
+open_dmx = "1.1.1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+rodio = "0.22.1"
+rfd = "0.15"
+lofty = "0.23.2"
+parking_lot = "0.12.5"
+tween = "2.1.0"
+strum = { version = "0.28.0", features = ["derive"] }
+scan_fmt = "0.2.6"
+rosc = "0.11.4"
+midir = "0.10.3"
+tokio = { version = "1.49.0", features = ["full"] }
+crossbeam-channel = "0.5.15"
