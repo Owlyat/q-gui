@@ -13,7 +13,6 @@ rodio = "0.22.1"
 rfd = "0.15"
 lofty = "0.23.2"
 parking_lot = "0.12.5"
-tween = "2.1.0"
 strum = { version = "0.28.0", features = ["derive"] }
 scan_fmt = "0.2.6"
 rosc = "0.11.4"

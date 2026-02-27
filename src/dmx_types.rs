@@ -618,7 +618,7 @@ pub struct AudioTrack {
     pub file_path: String,
     pub fade_in: f32,
     pub fade_out: f32,
-    pub start_point: u64,
+    pub start_point: f32,
     pub end_point: Option<f32>,
     pub volume: f32,
     pub duration: f32,
@@ -633,7 +633,7 @@ impl AudioTrack {
             file_path,
             fade_in: 0.0,
             fade_out: 0.0,
-            start_point: 0,
+            start_point: 0.0,
             end_point: None,
             volume: 1.0,
             duration: 0.0,
@@ -646,7 +646,7 @@ impl AudioTrack {
 #[derive(Clone)]
 pub struct Cue {
     /// Unique identifier for the cue
-    pub id: u32,
+    pub id: usize,
     /// Human-readable name of the cue
     pub name: String,
     /// Fade time in seconds (how long to transition to this cue)
@@ -658,7 +658,7 @@ pub struct Cue {
 }
 
 impl Cue {
-    pub fn new(id: u32) -> Self {
+    pub fn new(id: usize) -> Self {
         Self {
             id,
             name: format!("Cue {}", id),
@@ -683,7 +683,7 @@ pub struct Executor {
     /// Index of this executor (0-based)
     pub id: usize,
     /// Currently active cue ID (if any)
-    pub current_cue: Option<u32>,
+    pub current_cue: Option<usize>,
     /// Index of the current cue in the cue_list
     pub current_cue_index: usize,
     /// Whether the executor is currently playing
@@ -702,6 +702,8 @@ pub struct Executor {
     pub fade_start_time: f64,
     /// Whether a fade is currently in progress
     pub is_fading: bool,
+    /// Last Fader Level
+    pub last_fader_level: f32,
 }
 
 impl Executor {
@@ -709,15 +711,16 @@ impl Executor {
         Self {
             id,
             current_cue: None,
-            current_cue_index: 0,
-            is_running: false,
-            cue_list: Vec::new(),
-            fader_level: 0.0,
+            current_cue_index: Default::default(),
+            is_running: Default::default(),
+            cue_list: Default::default(),
+            fader_level: Default::default(),
             stored_channels: vec![0; DMX_CHANNELS],
-            target_level: 0.0,
-            current_output_level: 0.0,
-            fade_start_time: 0.0,
-            is_fading: false,
+            target_level: Default::default(),
+            current_output_level: Default::default(),
+            fade_start_time: Default::default(),
+            is_fading: Default::default(),
+            last_fader_level: Default::default(),
         }
     }
 
@@ -753,6 +756,15 @@ impl Executor {
     }
 
     pub fn update_fade(&mut self) {
+        if self.last_fader_level == 0.0 && self.fader_level != 0.0 {
+            self.target_level = 1.0;
+            self.is_fading = true;
+            self.fade_start_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f64();
+        }
+        self.last_fader_level = self.fader_level;
         if !self.is_fading || self.cue_list.is_empty() {
             self.current_output_level = self.fader_level;
             return;
@@ -760,7 +772,6 @@ impl Executor {
 
         let current_cue = &self.cue_list[self.current_cue_index];
         let fade_time = current_cue.fade_time;
-
         if fade_time <= 0.0 {
             self.current_output_level = self.fader_level;
             self.is_fading = false;

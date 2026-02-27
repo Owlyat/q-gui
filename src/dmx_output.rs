@@ -1,41 +1,36 @@
 use crate::dmx_types::DMX_CHANNELS;
 
 pub fn mix_executor_outputs(state: &mut crate::ui::ConsoleState) {
-    for ch in &mut state.channels {
-        *ch = 0;
-    }
+    let mut dmx_chans = [0u8; DMX_CHANNELS];
 
-    for exec in &mut state.executors {
+    // Calculate the executors values
+    state.executors.iter_mut().for_each(|exec| {
         exec.update_fade();
-
-        if exec.current_output_level > 0.0 && !exec.cue_list.is_empty() {
-            for (i, &level) in exec.stored_channels.iter().enumerate() {
-                if i < state.channels.len() {
-                    let mixed =
-                        (state.channels[i] as f32) + (level as f32 * exec.current_output_level);
-                    state.channels[i] = mixed.min(255.0) as u8;
-                }
+        if exec.fader_level > 0.0 {
+            if let Some(current_cue) = &exec.cue_list.get(exec.current_cue_index) {
+                current_cue.levels.iter().enumerate().for_each(|(idx, l)| {
+                    dmx_chans[idx.saturating_sub(1)] =
+                        ((*l as f32 * exec.current_output_level) * state.master_dimmer) as u8;
+                });
             }
         }
-    }
+    });
 
-    let master = state.master_dimmer;
-    if master < 1.0 {
-        for ch in &mut state.channels {
-            *ch = (*ch as f32 * master) as u8;
+    // Buffer is sent above every dmx values
+    state.buffer.iter().for_each(|v| {
+        if let Some(chan) = dmx_chans.get_mut(v.chan.saturating_sub(1)) {
+            *chan = v.dmx;
         }
-    }
-
-    if let Some(ref mut dmx) = state.dmx_serial {
-        let channels_array: [u8; DMX_CHANNELS] = state
-            .channels
-            .clone()
-            .try_into()
-            .unwrap_or([0; DMX_CHANNELS]);
-        let _ = dmx.set_channels(channels_array);
+    });
+    if let Some(dmx) = &mut state.dmx_serial {
+        dmx.set_channels(dmx_chans);
+        // Set the serial state
         match dmx.check_agent() {
             Ok(()) => state.dmx_connected = true,
-            Err(_) => state.dmx_connected = false,
+            Err(e) => {
+                state.dmx_connected = false;
+                state.dmx_serial_error = e.to_string();
+            }
         }
     }
 }

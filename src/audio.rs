@@ -4,9 +4,7 @@ use parking_lot::Mutex;
 use rodio::{Decoder, DeviceSinkBuilder, Source};
 use std::fs::File;
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-use tween::Tweener;
+use std::time::{Duration, Instant};
 
 pub struct AudioEngine {
     active_players: Arc<Mutex<Vec<ActivePlayback>>>,
@@ -67,6 +65,7 @@ impl AudioEngine {
         let player = rodio::Player::connect_new(mixer);
         let player_arc = Arc::new(player);
         let player_for_fade_in = Arc::clone(&player_arc);
+        let player_for_fade_out = Arc::clone(&player_arc);
 
         if track.fade_in > 0.0 {
             player_arc.set_volume(0.0);
@@ -74,25 +73,53 @@ impl AudioEngine {
 
         let fade_in = track.fade_in;
         let fade_out = track.fade_out;
-        let track_id = track.id;
-        let action = track.action.clone();
-        let ended_tracks = Arc::clone(&self.ended_tracks);
 
         player_arc.append(source);
-        let _ = player_arc.try_seek(Duration::from_secs(track.start_point));
+        let _ = player_arc.try_seek(Duration::from_secs(track.start_point as u64));
 
         if fade_in > 0.0 {
+            println!("running fade in");
             let vol = track.volume * master_volume;
-            player_for_fade_in.set_volume(0.0);
-            std::thread::spawn(async move || {
-                println!("Started tween");
-                let mut tween = Tweener::sine_in_out(0.0, vol, fade_in);
-                while !tween.is_finished() {
-                    let v = tween.move_by(0.200);
-                    player_for_fade_in.set_volume(v);
-                    thread::sleep(Duration::from_millis(200));
+            tokio::spawn(async move {
+                println!("Starting fade");
+                let start_fade_in = Instant::now();
+                loop {
+                    let elapsed = start_fade_in.elapsed().as_secs_f32();
+                    let progress = elapsed / fade_in;
+                    if progress <= 1.0 {
+                        player_for_fade_in.set_volume(progress * vol);
+                    } else {
+                        break;
+                    }
                 }
-                println!("Finished tween");
+                println!("Fade In Thread finished");
+            });
+        }
+        if fade_out > 0.0 {
+            let vol = track.volume * master_volume;
+            let track_fade_out = track.fade_out.clone();
+            let track_end = track.end_point.unwrap_or(track.duration);
+            tokio::spawn(async move {
+                let start_fade_out = Instant::now();
+                let mut reached = false;
+                loop {
+                    let elapsed = start_fade_out.elapsed().as_secs_f32();
+                    if elapsed >= track_end - track_fade_out && !reached {
+                        reached = true;
+                        println!("Running fade out");
+                    }
+                    if reached {
+                        let elapsed = elapsed - (track_end - track_fade_out);
+                        let progress = elapsed / track_fade_out;
+                        if progress <= 1.0 {
+                            player_for_fade_out.set_volume(1.0 - progress * vol);
+                        } else {
+                            player_for_fade_out.stop();
+                            break;
+                        }
+                    }
+                }
+                println!("Fade Out Thread finished");
             });
         }
 

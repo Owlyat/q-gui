@@ -1,9 +1,9 @@
 use crate::console::{ConsoleCommand, execute_console_command};
-use crate::dmx_output::mix_executor_outputs;
 use crate::dmx_types::{
     AudioAction, AudioTrack, ChannelType, Cue, DMX_CHANNELS, DMXBufferValue, Executor, Fixture,
     FixtureGroup, FixtureTemplateLibrary,
 };
+use egui::epaint::ColorMode;
 use egui::{Color32, DragValue, Key, RichText, ScrollArea, TextEdit, Vec2};
 use open_dmx::check_valid_channel;
 #[derive(PartialEq, Default, Clone)]
@@ -100,7 +100,7 @@ pub struct ConsoleState {
     /// Buffer containing pending DMX values before storing to a cue
     pub buffer: Vec<DMXBufferValue>,
     /// Index of cue being labeled (if any)
-    pub labeling_cue: Option<(usize, usize)>, // (executor_index, cue_index)
+    pub labeling_cue: Option<usize>,
     /// Temporary name buffer for labeling
     pub label_buffer: String,
     /// Index of executor currently being edited (if any)
@@ -270,7 +270,7 @@ pub fn show_executor_panel_content(ui: &mut egui::Ui, state: &mut ConsoleState) 
                     }
 
                     let button_size = Vec2::new(fader_width, 30.0);
-                    let go_button = egui::Button::new("GO").fill(Color32::from_rgb(0, 180, 0));
+                    let go_button = egui::Button::new("GO").fill(Color32::DARK_GREEN);
                     if ui.add_sized(button_size, go_button).clicked() {
                         if state.edit_state.is_store() {
                             let mut levels = vec![0; DMX_CHANNELS];
@@ -279,7 +279,7 @@ pub fn show_executor_panel_content(ui: &mut egui::Ui, state: &mut ConsoleState) 
                                     levels[val.chan] = val.dmx;
                                 }
                             }
-                            let mut new_cue = Cue::new((exec.cue_list.len() + 1) as u32);
+                            let mut new_cue = Cue::new(exec.cue_list.len().saturating_add(1));
                             new_cue.levels = levels;
                             exec.cue_list.push(new_cue);
                             state.edit_state.reset();
@@ -294,8 +294,7 @@ pub fn show_executor_panel_content(ui: &mut egui::Ui, state: &mut ConsoleState) 
                         }
                     }
 
-                    let go_back_button =
-                        egui::Button::new("BACK").fill(Color32::from_rgb(180, 0, 0));
+                    let go_back_button = egui::Button::new("BACK").fill(Color32::DARK_BLUE);
                     if ui.add_sized(button_size, go_back_button).clicked() {
                         if state.edit_state.is_delete() {
                             state.delete_confirm_executor = Some(exec_idx);
@@ -351,12 +350,11 @@ pub fn show_executor_panel_content(ui: &mut egui::Ui, state: &mut ConsoleState) 
     }
 }
 
-pub fn show_dmx_console(ctx: &egui::Context, state: &mut ConsoleState) {
+pub fn show_dmx_console<'a>(ctx: &egui::Context, state: &mut ConsoleState) {
     if let Some(exec_idx) = state.editing_executor {
         show_edit_executor_panel(ctx, state, exec_idx);
-    }
-    if let Some(exec_idx) = state.delete_confirm_executor {
-        show_confirm_prompt_panel(ctx, state, exec_idx);
+    } else if let Some(exec_idx) = &state.delete_confirm_executor {
+        show_confirm_prompt_panel(ctx, state, *exec_idx);
     }
     show_sidebar_master_fader(ctx, state);
 
@@ -427,13 +425,19 @@ fn show_command_palette_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
     let button_size = Vec2::new(50.0, 35.0);
     ui.horizontal(|ui| {
         if ui
-            .add_sized(button_size, egui::Button::new("Chan"))
+            .add_sized(
+                button_size,
+                egui::Button::new(RichText::new("Chan").color(Color32::GREEN)),
+            )
             .clicked()
         {
             state.command_input.push_str("Chan ");
         }
         if ui
-            .add_sized(button_size, egui::Button::new("Fixture"))
+            .add_sized(
+                button_size,
+                egui::Button::new(RichText::new("Fixture").color(Color32::ORANGE)),
+            )
             .clicked()
         {
             state.command_input.push_str("Fix ");
@@ -442,7 +446,10 @@ fn show_command_palette_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
             state.command_input.push_str("0");
         }
         if ui
-            .add_sized(button_size, egui::Button::new("B/O"))
+            .add_sized(
+                button_size,
+                egui::Button::new(RichText::new("B/O").color(Color32::RED)),
+            )
             .clicked()
         {
             state.command_input = "b/o".to_string();
@@ -473,7 +480,13 @@ fn show_command_palette_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
         }
     });
     ui.horizontal(|ui| {
-        if ui.add_sized(button_size, egui::Button::new("At")).clicked() {
+        if ui
+            .add_sized(
+                button_size,
+                egui::Button::new(RichText::new("At").color(Color32::YELLOW)),
+            )
+            .clicked()
+        {
             let input = state.command_input.trim_end();
             if input.ends_with("at") || input.ends_with("at ") {
                 if let Some(pos) = input.rfind("at") {
@@ -486,7 +499,13 @@ fn show_command_palette_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
                 state.command_input.push_str(" at ");
             }
         }
-        if ui.add_sized(button_size, egui::Button::new(".")).clicked() {
+        if ui
+            .add_sized(
+                button_size,
+                egui::Button::new(RichText::new(".").color(Color32::BLUE)),
+            )
+            .clicked()
+        {
             if state.command_input.trim_end().ends_with("at") {
                 state.command_input = format!("{} 0", state.command_input.trim_end());
             }
@@ -540,15 +559,9 @@ fn show_buffer_list(ctx: &egui::Context, state: &mut ConsoleState) {
                         ui.label(RichText::new("(empty)").weak());
                     } else {
                         for val in &state.buffer {
-                            if val.dmx > 0 {
-                                ui.label(
-                                    RichText::new(format!("Ch {}: {}", val.chan, val.dmx))
-                                        .monospace(),
-                                );
-                            }
-                        }
-                        if state.buffer.iter().all(|v| v.dmx == 0) {
-                            ui.label(RichText::new("(empty)").weak());
+                            ui.label(
+                                RichText::new(format!("Ch {}: {}", val.chan, val.dmx)).monospace(),
+                            );
                         }
                     }
                 });
@@ -563,12 +576,18 @@ fn show_dmx_status(state: &mut ConsoleState, ui: &mut egui::Ui) {
             ui.label(RichText::new("Connected").color(Color32::GREEN).strong());
         } else if state.dmx_serial.is_some() {
             ui.label(RichText::new("Disconnected").color(Color32::RED).strong());
+            if !state.dmx_serial_error.is_empty() {
+                ui.label(RichText::new(&state.dmx_serial_error).color(Color32::ORANGE));
+            }
         } else {
             ui.label(
                 RichText::new("Not Initialized")
                     .color(Color32::YELLOW)
                     .weak(),
             );
+            if !state.dmx_serial_error.is_empty() {
+                ui.label(RichText::new(&state.dmx_serial_error).color(Color32::ORANGE));
+            }
         }
     });
 }
@@ -595,7 +614,12 @@ fn show_sidebar_master_fader(ctx: &egui::Context, state: &mut ConsoleState) {
 fn show_command_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
     let active_size = Vec2::new(120.0, 35.0);
     let normal_size = Vec2::new(80.0, 35.0);
-    let clear_button = egui::Button::new("Clear").fill(Color32::from_rgb(180, 0, 0));
+    let clear_button =
+        egui::Button::new("Clear").fill(if !state.buffer.is_empty() | state.edit_state.if_any() {
+            Color32::DARK_RED
+        } else {
+            Color32::GRAY
+        });
 
     let store_button = egui::Button::new("Store").fill(Color32::from_rgb(0, 100, 200));
     let store_active = egui::Button::new("Store (ACTIVE)").fill(Color32::from_rgb(0, 150, 255));
@@ -616,7 +640,17 @@ fn show_command_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
     let move_button = egui::Button::new("Move").fill(Color32::from_rgb(200, 100, 0));
     let move_active = egui::Button::new("Move (ACTIVE)").fill(Color32::from_rgb(200, 100, 0));
 
-    let buffer_button = egui::Button::new("Buffer").fill(Color32::GRAY);
+    let buffer_button =
+        egui::Button::new(RichText::new("Buffer").color(if state.buffer.is_empty() {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        }))
+        .fill(if state.buffer.is_empty() {
+            Color32::GRAY
+        } else {
+            Color32::DARK_BLUE
+        });
 
     ui.horizontal(|ui| {
         let size = if state.edit_state.is_store() {
@@ -839,16 +873,112 @@ fn show_confirm_prompt_panel(ctx: &egui::Context, state: &mut ConsoleState, exec
 }
 
 fn show_edit_executor_panel(ctx: &egui::Context, state: &mut ConsoleState, exec_idx: usize) {
-    egui::Window::new("Edit Cues")
-        .collapsible(false)
+    let mut exec_command = false;
+    egui::Window::new("Cue List")
+        .collapsible(true)
         .resizable(true)
+        .movable(true)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             ui.heading(format!("Executor {} - Cue List", exec_idx + 1));
             ui.separator();
 
-            let cue_count = state.executors[exec_idx].cue_list.len();
-
+            // V2
+            if let Some(executor) = state.executors.get_mut(exec_idx) {
+                if executor.cue_list.is_empty() {
+                    ui.label("No cues in this executor.");
+                } else {
+                    ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            executor.cue_list.iter_mut().for_each(|cue| {
+                                // CUE ITERATION
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_sized(
+                                            Vec2::new(120.0, 35.0),
+                                            egui::Button::new(
+                                                RichText::new(format!(
+                                                    "[Executor {}] {} ID: {}",
+                                                    executor.id.saturating_add(1), // Base 1 instead of base 0
+                                                    cue.name,
+                                                    cue.id,
+                                                ))
+                                                .color(Color32::GRAY),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        match state.edit_state {
+                                            EditingState::Move => {
+                                                if state
+                                                    .command_input
+                                                    .to_lowercase()
+                                                    .trim_end()
+                                                    .ends_with("to exec")
+                                                {
+                                                    state.command_input = format!(
+                                                        "{} {} Cue {}",
+                                                        state.command_input.trim_end(),
+                                                        exec_idx.saturating_add(1),
+                                                        cue.id
+                                                    );
+                                                    state
+                                                        .edit_state
+                                                        .reset_if_set(EditingState::Move);
+                                                    exec_command = true;
+                                                } else {
+                                                    state.command_input = format!(
+                                                        "Move Exec {} Cue {} To Exec ",
+                                                        exec_idx.saturating_add(1),
+                                                        cue.id
+                                                    );
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    if let Some(cue_idx) = state.labeling_cue
+                                        && state.edit_state.is_label()
+                                        && cue_idx == cue.id
+                                    {
+                                        ui.add_sized(
+                                            Vec2::new(120.0, 35.0),
+                                            egui::TextEdit::singleline(&mut state.label_buffer),
+                                        );
+                                        if ui
+                                            .add_sized(
+                                                Vec2::new(120.0, 35.0),
+                                                egui::Button::new("Save Cue Name"),
+                                            )
+                                            .clicked()
+                                        {
+                                            cue.name = state.label_buffer.clone();
+                                            state.label_buffer.clear();
+                                            state.edit_state.reset();
+                                            state.labeling_cue = None;
+                                        }
+                                    }
+                                    if state.edit_state.is_label()
+                                        && state.labeling_cue != Some(cue.id)
+                                    {
+                                        if ui
+                                            .add_sized(
+                                                Vec2::new(120.0, 35.0),
+                                                egui::Button::new("Rename"),
+                                            )
+                                            .clicked()
+                                        {
+                                            state.labeling_cue = Some(cue.id);
+                                        }
+                                    }
+                                });
+                            });
+                        });
+                    });
+                }
+            }
+            // V1
+            /* let cue_count = state.executors[exec_idx].cue_list.len();
             if cue_count == 0 {
                 ui.label("No cues in this executor.");
             } else {
@@ -943,12 +1073,16 @@ fn show_edit_executor_panel(ctx: &egui::Context, state: &mut ConsoleState, exec_
                         ui.separator();
                     }
                 });
-            }
+            } */
             if ui.button("Close").clicked() {
                 state.editing_executor = None;
                 state.edit_state.set(EditingState::None);
             }
         });
+    if exec_command {
+        execute_console_command(state);
+        state.command_input.clear();
+    }
 }
 
 pub fn show_fixtures_tab_content(ui: &mut egui::Ui, state: &mut ConsoleState) {
@@ -1369,6 +1503,14 @@ pub fn show_midi_osc_tab(ctx: &egui::Context, state: &mut ConsoleState) {
                                     &mut state.osc_address_manager.master_volume,
                                 );
                             });
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Go"));
+                                ui.text_edit_singleline(&mut state.osc_address_manager.audio_go);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Stop"));
+                                ui.text_edit_singleline(&mut state.osc_address_manager.audio_stop);
+                            });
                         });
                 });
                 ui.vertical(|ui| {
@@ -1423,7 +1565,7 @@ pub fn show_audio_tab(ctx: &egui::Context, state: &mut ConsoleState) {
         for (track_id, action) in ended_tracks {
             if action == AudioAction::Follow {
                 if let Some(idx) = state.audio_tracks.iter().position(|t| t.id == track_id) {
-                    let next_idx = idx + 1;
+                    let next_idx = idx.saturating_add(1) % state.audio_tracks.len();
                     if let Some(next_track) = state.audio_tracks.get(next_idx) {
                         let _ = engine.play(next_track, state.master_volume);
                         state.audio_index = next_idx;
@@ -1682,12 +1824,30 @@ pub fn show_audio_tab(ctx: &egui::Context, state: &mut ConsoleState) {
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Fade In:");
-                                ui.add(egui::Slider::new(&mut track.fade_in, 0.0..=10.0).text("s"));
+                                ui.add(
+                                    egui::Slider::new(
+                                        &mut track.fade_in,
+                                        0.0..=track.duration
+                                            - (track.fade_out
+                                                + (track.duration
+                                                    - track.end_point.unwrap_or(track.duration))
+                                                + track.start_point),
+                                    )
+                                    .text("s"),
+                                );
                             });
                             ui.horizontal(|ui| {
                                 ui.label("Fade Out:");
                                 ui.add(
-                                    egui::Slider::new(&mut track.fade_out, 0.0..=10.0).text("s"),
+                                    egui::Slider::new(
+                                        &mut track.fade_out,
+                                        0.0..=track.duration
+                                            - (track.fade_in
+                                                + track.start_point
+                                                + (track.duration
+                                                    - track.end_point.unwrap_or(track.duration))),
+                                    )
+                                    .text("s"),
                                 );
                             });
                             ui.horizontal(|ui| {
@@ -1695,7 +1855,11 @@ pub fn show_audio_tab(ctx: &egui::Context, state: &mut ConsoleState) {
                                 ui.add(
                                     egui::Slider::new(
                                         &mut track.start_point,
-                                        0..=track.duration as u64,
+                                        0.0..=track.duration
+                                            - track.fade_in
+                                            - track.fade_out
+                                            - (track.duration
+                                                - track.end_point.unwrap_or(track.duration)),
                                     )
                                     .text("s"),
                                 );
@@ -1704,8 +1868,12 @@ pub fn show_audio_tab(ctx: &egui::Context, state: &mut ConsoleState) {
                                 ui.label("End:");
                                 let mut end_val = track.end_point.unwrap_or(track.duration);
                                 ui.add(
-                                    egui::Slider::new(&mut end_val, 0.0..=track.duration.max(1.0))
-                                        .text("s"),
+                                    egui::Slider::new(
+                                        &mut end_val,
+                                        track.fade_in + track.fade_out + track.start_point
+                                            ..=track.duration,
+                                    )
+                                    .text("s"),
                                 );
                                 track.end_point = if end_val > 0.0 && end_val < track.duration {
                                     Some(end_val)
@@ -1744,7 +1912,7 @@ pub fn show_audio_tab(ctx: &egui::Context, state: &mut ConsoleState) {
     });
 }
 
-fn audio_go(state: &mut ConsoleState, track_count: usize) {
+pub fn audio_go(state: &mut ConsoleState, track_count: usize) {
     if track_count > 0 {
         let idx = state.audio_index;
         if let Some(ref engine) = state.audio_engine {

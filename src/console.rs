@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use crate::dmx_types::DMXBufferValue;
 use open_dmx::DMX_CHANNELS;
 use scan_fmt::scan_fmt;
@@ -17,6 +19,11 @@ pub enum ConsoleError {
     #[error("Missing arguments for command: {0}")]
     MissingArgs(String),
 }
+#[derive(strum::Display, Clone, Serialize, Deserialize, Debug, strum::EnumString)]
+pub enum Direction {
+    Up,
+    Down,
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug, strum::Display)]
 pub enum ConsoleCommand {
@@ -29,11 +36,17 @@ pub enum ConsoleCommand {
     #[strum(serialize = "Clear")]
     Clear,
     #[strum(serialize = "Move Exec {exec_from} Cue {cue_from} To Exec {exec_to} Cue {cue_to}")]
-    MoveExecCue {
+    MoveExecCueToExecCue {
         exec_from: usize,
         cue_from: usize,
         exec_to: usize,
         cue_to: usize,
+    },
+    #[strum(serialize = "Move Exec {exec_from} Cue {cue_from} {direction}")]
+    MoveExecCueDirection {
+        exec_from: usize,
+        cue_from: usize,
+        direction: Direction,
     },
 }
 impl TryFrom<String> for ConsoleCommand {
@@ -64,11 +77,25 @@ impl TryFrom<String> for ConsoleCommand {
             usize,
             usize
         ) {
-            return Ok(ConsoleCommand::MoveExecCue {
+            return Ok(ConsoleCommand::MoveExecCueToExecCue {
                 exec_from,
                 cue_from,
                 exec_to,
                 cue_to,
+            });
+        }
+        if let Ok((exec_from, cue_from)) = scan_fmt!(&s, "move exec {} cue {} up", usize, usize) {
+            return Ok(ConsoleCommand::MoveExecCueDirection {
+                exec_from,
+                cue_from,
+                direction: Direction::Up,
+            });
+        }
+        if let Ok((exec_from, cue_from)) = scan_fmt!(&s, "move exec {} cue {} down", usize, usize) {
+            return Ok(ConsoleCommand::MoveExecCueDirection {
+                exec_from,
+                cue_from,
+                direction: Direction::Down,
             });
         }
         Err(ConsoleError::UnknownCommand(value))
@@ -121,13 +148,103 @@ pub fn execute_console_command(state: &mut crate::ConsoleState) {
                     state.command_error = Some(format!("Fixture {fixture_id} not found"));
                 }
             }
-            ConsoleCommand::MoveExecCue {
+            ConsoleCommand::MoveExecCueToExecCue {
                 exec_from,
                 cue_from,
                 exec_to,
                 cue_to,
             } => {
-                let exec_from = exec_from.saturating_sub(1);
+                let exec = &mut state.executors[exec_from.saturating_sub(1)];
+                let cue_from_idx = exec
+                    .cue_list
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, c)| if c.id == cue_from { Some(idx) } else { None })
+                    .next();
+                let exec = &mut state.executors[exec_to.saturating_sub(1)];
+                let cue_to_idx = exec
+                    .cue_list
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, c)| if c.id == cue_to { Some(idx) } else { None })
+                    .next();
+
+                if let Some(idx_from) = cue_from_idx {
+                    if let Some(idx_to) = cue_to_idx {
+                        if exec_from == exec_to {
+                            state.executors[exec_from.saturating_sub(1)]
+                                .cue_list
+                                .swap(idx_from, idx_to);
+                        } else {
+                            let cue = state.executors[exec_from.saturating_sub(1)]
+                                .cue_list
+                                .remove(idx_from);
+                            let to_move = state.executors[exec_to.saturating_sub(1)]
+                                .cue_list
+                                .remove(idx_to);
+                            let mut found_same = false;
+                            // Prevent having same Cue ids from two different executors
+                            state.executors[exec_to.saturating_sub(1)]
+                                .cue_list
+                                .iter_mut()
+                                .for_each(|c| {
+                                    if c.id == cue.id {
+                                        found_same = true
+                                    }
+                                    if found_same {
+                                        c.id += 1;
+                                    }
+                                });
+                            let mut found_same = false;
+                            // Prevent having same Cue ids from two different executors
+                            state.executors[exec_from.saturating_sub(1)]
+                                .cue_list
+                                .iter_mut()
+                                .for_each(|c| {
+                                    if c.id == to_move.id {
+                                        found_same = true
+                                    }
+                                    if found_same {
+                                        c.id += 1;
+                                    }
+                                });
+                            state.executors[exec_from.saturating_sub(1)]
+                                .cue_list
+                                .insert(idx_from, to_move);
+                            state.executors[exec_to.saturating_sub(1)]
+                                .cue_list
+                                .insert(idx_to, cue);
+                        }
+                    } else {
+                        let cue = state.executors[exec_from.saturating_sub(1)]
+                            .cue_list
+                            .remove(idx_from);
+                        let cue_size = state.executors[exec_to.saturating_sub(1)].cue_list.len();
+                        if cue_size > 0 {
+                            let mut found_same = false;
+                            // Prevent having same Cue ids from two different executors
+                            state.executors[exec_to.saturating_sub(1)]
+                                .cue_list
+                                .iter_mut()
+                                .for_each(|c| {
+                                    if c.id == cue.id {
+                                        found_same = true
+                                    }
+                                    if found_same {
+                                        c.id += 1;
+                                    }
+                                });
+                            state.executors[exec_to.saturating_sub(1)]
+                                .cue_list
+                                .insert(cue_to.saturating_sub(1), cue);
+                        } else {
+                            state.executors[exec_to.saturating_sub(1)]
+                                .cue_list
+                                .push(cue);
+                        }
+                    }
+                }
+                /* let exec_from = exec_from.saturating_sub(1);
                 let exec_to = exec_to.saturating_sub(1);
                 let same_exec = exec_from == exec_to;
                 let cue_from = cue_from.saturating_sub(1);
@@ -154,7 +271,33 @@ pub fn execute_console_command(state: &mut crate::ConsoleState) {
                     }
                 }
 
-                state.command_history.push(cmd);
+                state.command_history.push(cmd); */
+            }
+            ConsoleCommand::MoveExecCueDirection {
+                exec_from,
+                cue_from,
+                direction,
+            } => {
+                let cue_size = state.executors[exec_from.saturating_sub(1)].cue_list.len();
+                if let Some(exec) = state.executors.get_mut(exec_from.saturating_sub(1)) {
+                    let idx = exec
+                        .cue_list
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, c)| if c.id == cue_from { Some(idx) } else { None })
+                        .next();
+                    if let Some(idx) = idx {
+                        exec.cue_list.swap(
+                            idx,
+                            match direction {
+                                Direction::Up => idx.saturating_add(1) % cue_size,
+                                Direction::Down => {
+                                    (cue_size as i16 + idx as i16 - 1) as usize % cue_size
+                                }
+                            },
+                        );
+                    }
+                }
             }
         },
         Err(e) => {

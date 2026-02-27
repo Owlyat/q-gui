@@ -7,12 +7,20 @@ use std::{
 use thiserror::Error;
 use tokio::task::JoinHandle;
 
-use crate::ui::ConsoleState;
+use crate::ui::{ConsoleState, audio_go};
 
 pub fn handle_osc(opt: Option<OscPacket>, state: &mut ConsoleState) {
     use crate::osc::is_osc_address;
     use rosc::OscType;
-    let osc_addresser = &state.osc_address_manager;
+    let osc_addresser = &state.osc_address_manager.clone();
+    if is_osc_address(&opt, &osc_addresser.audio_go) {
+        audio_go(state, state.audio_tracks.len());
+    }
+    if is_osc_address(&opt, &osc_addresser.audio_stop) {
+        if let Some(ref engine) = state.audio_engine {
+            engine.stop_all();
+        }
+    }
     if is_osc_address(&opt, &osc_addresser.master_volume) {
         if let Some(osc) = &opt {
             match osc {
@@ -231,10 +239,15 @@ pub fn is_osc_address(opt: &Option<OscPacket>, addr: impl std::fmt::Display) -> 
     }
 }
 
+#[derive(Clone)]
 pub struct OSCNaming {
-    /// The OSC Adress name to modify the master volume
+    /// The OSC Address name to modify the master volume
     pub master_volume: String,
-    /// The OSC Adress name to modify the master dmx
+    /// The OSC Address for the GO button in the audio tab
+    pub audio_go: String,
+    /// The OSC Address for the STOP button in the audio tab
+    pub audio_stop: String,
+    /// The OSC Address name to modify the master dmx
     pub master_dmx: String,
     /// Executor OSC Identifier
     pub executor_identifier: String,
@@ -250,6 +263,8 @@ impl Default for OSCNaming {
     fn default() -> Self {
         Self {
             master_volume: String::from("/MasterVolume"),
+            audio_go: String::from("/AudioGo"),
+            audio_stop: String::from("/AudioStop"),
             master_dmx: String::from("/MasterDMX"),
             executor_identifier: String::from("/Executor"),
             executor_dimmer: String::from("/Dimmer"),

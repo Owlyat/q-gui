@@ -4,10 +4,16 @@ mod dmx_output;
 mod dmx_types;
 mod osc;
 mod ui;
+mod show {
+    pub enum ShowAction {
+        Audio {},
+        Light {},
+        Midi {},
+    }
+}
 
 use eframe::NativeOptions;
 use egui::Vec2;
-use rosc::OscPacket;
 use std::sync::Mutex;
 
 use ui::{ConsoleState, Tab, show_audio_tab, show_dmx_console, show_liveshow_tab};
