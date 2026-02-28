@@ -1,15 +1,50 @@
+//! DMX Types and Data Structures
+//!
+//! This module defines all core types for the DMX lighting control system:
+//!
+//! ## Fixture Management
+//! - [`FixtureTemplate`] - Defines a type of fixture with its channel layouts
+//! - [`FixtureMode`] - A specific channel configuration for a fixture
+//! - [`ChannelDef`] - Individual channel definition within a mode
+//! - [`Fixture`] - An instance of a fixture with current runtime values
+//! - [`FixtureTemplateLibrary`] - Collection of all available fixture templates
+//!
+//! ## Channel Types
+//! - [`ChannelType`] - Enum of all possible DMX channel functions
+//! - [`Color`] - RGBW color values for fixture output
+//!
+//! ## Playback
+//! - [`Cue`] - A snapshot of DMX values with timing information
+//! - [`Executor`] - Playback controller with fader and cue list
+//! - [`DMXBufferValue`] - Single channel value for buffer manipulation
+//!
+//! ## Audio (Future)
+//! - [`AudioTrack`] - Audio file playback for shows
+//! - [`AudioAction`] - Audio behavior modes
+//!
+//! ## Groups
+//! - [`FixtureGroup`] - Collective control of multiple fixtures
+
 pub use open_dmx::DMX_CHANNELS;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Color values for RGB-type fixtures
+/// Color values for RGB-type fixtures.
+/// Represents the color channels commonly found in LED PARs and moving lights.
+/// Each field holds a DMX value (0-255) for that color component.
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct Color {
+    /// Red channel value (0-255)
     pub r: u8,
+    /// Green channel value (0-255)
     pub g: u8,
+    /// Blue channel value (0-255)
     pub b: u8,
+    /// White channel value (0-255) - used in RGBW fixtures
     pub w: u8,
+    /// Amber channel value (0-255) - used in RGBWA fixtures
     pub amber: u8,
+    /// UV (Ultraviolet) channel value (0-255) - used in RGBWAU fixtures
     pub uv: u8,
 }
 
@@ -39,37 +74,74 @@ impl Color {
     pub fn to_hex(&self) -> String {
         format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }
+
+    pub fn has_color(&self) -> bool {
+        self.r != 0 || self.g != 0 || self.b != 0 || self.w != 0
+    }
 }
 
-/// Channel type definitions for fixtures
+/// Channel type definitions for fixtures.
+/// Represents the different types of DMX channels that a fixture can have.
+/// Each variant corresponds to a specific function or color in a lighting fixture.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub enum ChannelType {
+    /// Intensity/Dimmer - controls overall brightness (0 = off, 255 = full)
     Intensity,
+    /// Red color channel for RGB mixing
     Red,
+    /// Green color channel for RGB mixing
     Green,
+    /// Blue color channel for RGB mixing
     Blue,
+    /// White color channel for RGBW fixtures
     White,
+    /// Amber color channel for RGBWA fixtures (adds warm orange)
     Amber,
+    /// UV (Ultraviolet) channel for blacklight effects
     UV,
+    /// Color wheel - cycles through predefined colors
     ColorWheel,
+    /// CTO (Color Temperature Orange) - warms the color temperature
     CTO,
+    /// CTB (Color Temperature Blue) - cools the color temperature
     CTB,
+    /// Pan - horizontal movement for moving heads (coarse 8-bit)
     Pan,
+    /// Pan Fine - fine horizontal adjustment (16-bit, used with Pan)
     PanFine,
+    /// Tilt - vertical movement for moving heads (coarse 8-bit)
     Tilt,
+    /// Tilt Fine - fine vertical adjustment (16-bit, used with Tilt)
     TiltFine,
+    /// Gobo Wheel - rotates through pattern gobos
     GoboWheel,
+    /// Gobo Rotation - rotates the current gobo pattern
     GoboRotation,
+    /// Secondary Gobo Wheel - additional gobo patterns
     GoboWheel2,
+    /// Rotation for secondary gobo wheel
     GoboRotation2,
+    /// Shutter - blocks light output for strobe effects
     Shutter,
+    /// Strobe - electronic strobe frequency control
     Strobe,
+    /// Zoom - adjusts beam angle (narrow to wide)
     Zoom,
+    /// Focus - adjusts beam sharpness/distance focus
     Focus,
+    /// Prism - rotates a prism effect
     Prism,
+    /// Frost - diffuses the beam for wash effect
     Frost,
+    /// Control - special functions like lamp on/off, reset
     Control,
+    /// Speed - controls movement speed for moving heads
     Speed,
+}
+impl ChannelType {
+    pub fn is(&self, v: Self) -> bool {
+        *self == v
+    }
 }
 
 impl ChannelType {
@@ -105,11 +177,18 @@ impl ChannelType {
     }
 }
 
-/// Definition of a single channel in a fixture
+/// Definition of a single channel in a fixture mode.
+/// Describes what type of control this channel provides and its position
+/// within the fixture's DMX footprint.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ChannelDef {
+    /// The type of function this channel controls (e.g., Red, Pan, Intensity)
     pub channel_type: ChannelType,
+    /// Offset from the fixture's start channel (0-based).
+    /// For a fixture starting at DMX channel 5 with Red at offset 1,
+    /// Red is actually on channel 6.
     pub offset: u8,
+    /// Human-readable name for this channel (auto-generated from channel_type)
     pub name: String,
 }
 
@@ -123,10 +202,15 @@ impl ChannelDef {
     }
 }
 
-/// A mode definition for a fixture template (e.g., 8ch, 16ch)
+/// A mode definition for a fixture template (e.g., 8ch, 16ch).
+/// Fixture modes define different channel layouts for the same physical fixture.
+/// Common modes include "Dimmer" (with intensity channel) and "RGB" (without).
+/// Different modes use different numbers of DMX channels.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct FixtureMode {
+    /// Name of this mode (e.g., "4ch (Dimmer)", "3ch (RGB)", "17ch")
     pub name: String,
+    /// List of channel definitions in order
     pub channels: Vec<ChannelDef>,
 }
 
@@ -143,13 +227,21 @@ impl FixtureMode {
     }
 }
 
-/// A fixture template defining channel layouts
+/// A fixture template defining channel layouts.
+/// Represents a "type" of fixture (e.g., "Generic RGB Par") rather than
+/// a specific instance. Contains multiple modes with different channel layouts.
+/// Templates can be predefined (built-in) or user-defined.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct FixtureTemplate {
+    /// Unique identifier for this template
     pub id: u32,
+    /// Display name (e.g., "Generic RGB Par", "Martin MAC 250")
     pub name: String,
+    /// Manufacturer name (e.g., "Generic", "Martin", "Chauvet")
     pub manufacturer: String,
+    /// Available modes for this fixture
     pub modes: Vec<FixtureMode>,
+    /// Whether this template was created by the user (true) or is built-in (false)
     pub is_user_defined: bool,
 }
 
@@ -177,10 +269,14 @@ impl FixtureTemplate {
     }
 }
 
-/// Library of fixture templates (predefined + user)
+/// Library of fixture templates (predefined + user-defined).
+/// Contains all available fixture definitions including built-in templates
+/// for common fixtures and any user-created templates.
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct FixtureTemplateLibrary {
+    /// All available fixture templates
     pub templates: Vec<FixtureTemplate>,
+    /// Next available ID for user-created templates
     pub next_id: u32,
 }
 
@@ -504,27 +600,45 @@ impl FixtureTemplateLibrary {
     }
 }
 
-/// Fixture instance with runtime state
+/// Fixture instance with runtime state.
+/// Represents a specific physical fixture in the DMX universe with its current
+/// settings (color, position, etc.). References a template for channel layout.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Fixture {
-    pub id: usize,
+    /// Unique identifier for this fixture instance
+    pub id: u32,
+    /// User-assigned name for this fixture
     pub name: String,
+    /// Starting DMX channel (1-based). Channels for this fixture occupy
+    /// start_channel through start_channel + mode_channels - 1.
     pub start_channel: usize,
+    /// ID of the template this fixture uses
     pub template_id: u32,
+    /// Index of the selected mode within the template
     pub mode_index: usize,
+    /// The dimmer value
+    pub intensity: u8,
+    /// Current RGBW color values
     pub color: Color,
+    /// Current pan position (0-255, maps to 0-540° typically)
     pub pan: u16,
+    /// Current tilt position (0-255, maps to 0-270° typically)
     pub tilt: u16,
+    /// Shutter/Strobe value (0 = open, 1-255 = strobe speed)
     pub shutter: u8,
+    /// Current gobo selection
     pub gobo: u8,
+    /// Current zoom position
     pub zoom: u8,
+    /// Current focus position
     pub focus: u8,
+    /// Custom channel values for undefined channel types (channel_offset -> value)
     pub custom_values: HashMap<usize, u8>,
 }
 
 impl Fixture {
     pub fn new(
-        id: usize,
+        id: u32,
         name: String,
         start_channel: usize,
         template_id: u32,
@@ -539,11 +653,12 @@ impl Fixture {
             color: Color::default(),
             pan: 128,
             tilt: 128,
-            shutter: 0,
-            gobo: 0,
+            shutter: Default::default(),
+            gobo: Default::default(),
             zoom: 128,
             focus: 128,
             custom_values: HashMap::new(),
+            intensity: Default::default(),
         }
     }
 
@@ -553,7 +668,7 @@ impl Fixture {
 
             for channel in &mode.channels {
                 let value = match channel.channel_type {
-                    ChannelType::Intensity => 0,
+                    ChannelType::Intensity => self.intensity,
                     ChannelType::Red => self.color.r,
                     ChannelType::Green => self.color.g,
                     ChannelType::Blue => self.color.b,
@@ -580,14 +695,59 @@ impl Fixture {
             Vec::new()
         }
     }
+    pub fn get_fixture_as_buffer(
+        &self,
+        template: &FixtureTemplate,
+    ) -> Vec<(ChannelType, DMXBufferValue)> {
+        if let Some(mode) = template.get_mode(self.mode_index) {
+            let mut values = Vec::new();
+
+            for chan_def in &mode.channels {
+                let value = match chan_def.channel_type {
+                    ChannelType::Intensity => self.intensity,
+                    ChannelType::Red => self.color.r,
+                    ChannelType::Green => self.color.g,
+                    ChannelType::Blue => self.color.b,
+                    ChannelType::White => self.color.w,
+                    ChannelType::Amber => self.color.amber,
+                    ChannelType::UV => self.color.uv,
+                    ChannelType::Pan => (self.pan >> 8) as u8,
+                    ChannelType::PanFine => (self.pan & 0xFF) as u8,
+                    ChannelType::Tilt => (self.tilt >> 8) as u8,
+                    ChannelType::TiltFine => (self.tilt & 0xFF) as u8,
+                    ChannelType::Shutter | ChannelType::Strobe => self.shutter,
+                    ChannelType::GoboWheel => self.gobo,
+                    ChannelType::Zoom => self.zoom,
+                    ChannelType::Focus => self.focus,
+                    _ => *self
+                        .custom_values
+                        .get(&(chan_def.offset as usize))
+                        .unwrap_or(&0),
+                };
+
+                let dmx_chan = self.start_channel + chan_def.offset as usize;
+                values.push((chan_def.channel_type, DMXBufferValue::new(dmx_chan, value)));
+            }
+
+            values
+        } else {
+            Vec::new()
+        }
+    }
 }
 
-/// Fixture group for collective control
+/// Fixture group for collective control.
+/// Allows multiple fixtures to be controlled as a single unit.
+/// Useful for treating multiple PARs as one "unit" for patching or control.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct FixtureGroup {
+    /// Unique identifier for this group
     pub id: u32,
+    /// User-assigned name for this group
     pub name: String,
-    pub fixture_ids: Vec<usize>,
+    /// List of fixture IDs that belong to this group
+    pub fixture_ids: Vec<u32>,
+    /// Optional grid position for visual representation
     pub grid_index: Option<usize>,
 }
 
@@ -602,26 +762,42 @@ impl FixtureGroup {
     }
 }
 
-/// Audio track for show control
+/// Audio playback action for show control.
+/// Defines how audio tracks behave in relation to the show/sequence.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub enum AudioAction {
+    /// No special audio action - track plays normally
     None,
+    /// Follow mode - audio starts when show starts
     Follow,
+    /// Continue mode - audio continues across cues
     Continue,
 }
 
-/// Audio track for show control
+/// Audio track for show control.
+/// Represents an audio file that can be played during a light show,
+/// typically used for music or sound effects.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct AudioTrack {
+    /// Unique identifier for this track
     pub id: u32,
+    /// Display name for the track
     pub name: String,
+    /// File path to the audio file
     pub file_path: String,
+    /// Fade in duration in seconds
     pub fade_in: f32,
+    /// Fade out duration in seconds
     pub fade_out: f32,
+    /// Starting position in the track (in seconds)
     pub start_point: f32,
+    /// Optional end position for looping/clipped playback
     pub end_point: Option<f32>,
+    /// Volume level (0.0 - 1.0)
     pub volume: f32,
+    /// Total duration of the track in seconds
     pub duration: f32,
+    /// Audio action behavior
     pub action: AudioAction,
 }
 
@@ -642,23 +818,25 @@ impl AudioTrack {
     }
 }
 
-/// Represents a cue containing DMX values and timing information
+/// Represents a cue containing DMX values and timing information.
+/// A cue is a snapshot of all DMX channel values that can be recalled
+/// and played back through an executor. Supports fade times for smooth transitions.
 #[derive(Clone)]
 pub struct Cue {
     /// Unique identifier for the cue
-    pub id: usize,
+    pub id: u32,
     /// Human-readable name of the cue
     pub name: String,
     /// Fade time in seconds (how long to transition to this cue)
     pub fade_time: f32,
     /// Delay time in seconds before starting the fade
     pub delay: f32,
-    /// DMX channel values (512 channels)
+    /// DMX channel values (512 channels, index 0 = channel 1)
     pub levels: Vec<u8>,
 }
 
 impl Cue {
-    pub fn new(id: usize) -> Self {
+    pub fn new(id: u32) -> Self {
         Self {
             id,
             name: format!("Cue {}", id),
@@ -669,7 +847,9 @@ impl Cue {
     }
 }
 
-/// Represents a single DMX channel value in the buffer
+/// Represents a single DMX channel value in the buffer.
+/// Used for the temporary buffer that holds values before storing to a cue,
+/// or for direct channel manipulation commands.
 #[derive(PartialEq, Clone, Debug)]
 pub struct DMXBufferValue {
     /// DMX channel number (1-based, 1-512)
@@ -678,15 +858,25 @@ pub struct DMXBufferValue {
     pub dmx: u8,
 }
 
-/// Represents an executor that controls playback of cues with a fader
+impl DMXBufferValue {
+    pub fn new(chan: usize, val: u8) -> Self {
+        Self { chan, dmx: val }
+    }
+}
+/// Represents an executor that controls playback of cues with a fader.
+/// Executors are the playback section of a lighting console - each has:
+/// - A list of cues that can be stepped through
+/// - A fader for intensity control
+/// - GO/BACK buttons for cue advancement
+/// - Fade engine for smooth transitions between cues
 pub struct Executor {
     /// Index of this executor (0-based)
-    pub id: usize,
+    pub id: u32,
     /// Currently active cue ID (if any)
-    pub current_cue: Option<usize>,
+    pub current_cue: Option<u32>,
     /// Index of the current cue in the cue_list
     pub current_cue_index: usize,
-    /// Whether the executor is currently playing
+    /// Whether the executor is currently playing (not currently used)
     pub is_running: bool,
     /// List of cues stored in this executor
     pub cue_list: Vec<Cue>,
@@ -702,12 +892,12 @@ pub struct Executor {
     pub fade_start_time: f64,
     /// Whether a fade is currently in progress
     pub is_fading: bool,
-    /// Last Fader Level
+    /// Last fader level (for detecting fader movements)
     pub last_fader_level: f32,
 }
 
 impl Executor {
-    pub fn new(id: usize) -> Self {
+    pub fn new(id: u32) -> Self {
         Self {
             id,
             current_cue: None,

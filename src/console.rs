@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::dmx_types::DMXBufferValue;
+use crate::dmx_types::{ChannelType, DMXBufferValue, Fixture};
 use open_dmx::DMX_CHANNELS;
 use scan_fmt::scan_fmt;
 use serde::{Deserialize, Serialize};
@@ -30,22 +30,30 @@ pub enum ConsoleCommand {
     #[strum(serialize = "Chan {ch} at {value}")]
     DimChannel { ch: usize, value: u8 },
     #[strum(serialize = "Fix {fixture_id} at {value}")]
-    DimFixture { fixture_id: usize, value: u8 },
+    DimFixture { fixture_id: u32, value: u8 },
+    #[strum(serialize = "Fix {fixture_id} Color R{r} G{g} B{b} W{w}")]
+    SetFixtureColor {
+        fixture_id: u32,
+        r: u8,
+        g: u8,
+        b: u8,
+        w: u8,
+    },
     #[strum(serialize = "Blackout")]
     Blackout,
     #[strum(serialize = "Clear")]
     Clear,
     #[strum(serialize = "Move Exec {exec_from} Cue {cue_from} To Exec {exec_to} Cue {cue_to}")]
     MoveExecCueToExecCue {
-        exec_from: usize,
-        cue_from: usize,
-        exec_to: usize,
-        cue_to: usize,
+        exec_from: u32,
+        cue_from: u32,
+        exec_to: u32,
+        cue_to: u32,
     },
     #[strum(serialize = "Move Exec {exec_from} Cue {cue_from} {direction}")]
     MoveExecCueDirection {
-        exec_from: usize,
-        cue_from: usize,
+        exec_from: u32,
+        cue_from: u32,
         direction: Direction,
     },
 }
@@ -66,16 +74,27 @@ impl TryFrom<String> for ConsoleCommand {
         if let Ok((ch, value)) = scan_fmt!(&s, "chan {} at {}", usize, u8) {
             return Ok(ConsoleCommand::DimChannel { ch, value });
         }
-        if let Ok((fixture_id, value)) = scan_fmt!(&s, "fix {} at {}", usize, u8) {
+        if let Ok((fixture_id, value)) = scan_fmt!(&s, "fix {} at {}", u32, u8) {
             return Ok(ConsoleCommand::DimFixture { fixture_id, value });
+        }
+        if let Ok((fixture_id, r, g, b, w)) =
+            scan_fmt!(&s, "fix {} color r{} g{} b{} w{}", u32, u8, u8, u8, u8)
+        {
+            return Ok(ConsoleCommand::SetFixtureColor {
+                fixture_id,
+                r,
+                g,
+                b,
+                w,
+            });
         }
         if let Ok((exec_from, cue_from, exec_to, cue_to)) = scan_fmt!(
             &s,
             "move exec {} cue {} to exec {} cue {}",
-            usize,
-            usize,
-            usize,
-            usize
+            u32,
+            u32,
+            u32,
+            u32
         ) {
             return Ok(ConsoleCommand::MoveExecCueToExecCue {
                 exec_from,
@@ -84,14 +103,14 @@ impl TryFrom<String> for ConsoleCommand {
                 cue_to,
             });
         }
-        if let Ok((exec_from, cue_from)) = scan_fmt!(&s, "move exec {} cue {} up", usize, usize) {
+        if let Ok((exec_from, cue_from)) = scan_fmt!(&s, "move exec {} cue {} up", u32, u32) {
             return Ok(ConsoleCommand::MoveExecCueDirection {
                 exec_from,
                 cue_from,
                 direction: Direction::Up,
             });
         }
-        if let Ok((exec_from, cue_from)) = scan_fmt!(&s, "move exec {} cue {} down", usize, usize) {
+        if let Ok((exec_from, cue_from)) = scan_fmt!(&s, "move exec {} cue {} down", u32, u32) {
             return Ok(ConsoleCommand::MoveExecCueDirection {
                 exec_from,
                 cue_from,
@@ -125,25 +144,111 @@ pub fn execute_console_command(state: &mut crate::ConsoleState) {
                 if let Some(existing) = state.buffer.iter_mut().find(|v| v.chan == ch) {
                     existing.dmx = value;
                 } else {
-                    state.buffer.push(DMXBufferValue {
-                        chan: ch,
-                        dmx: value,
-                    });
+                    state.buffer.push(DMXBufferValue::new(ch, value));
                 }
                 state.command_history.push(cmd);
             }
             ConsoleCommand::DimFixture { fixture_id, value } => {
-                if let Some(fixture) = state.fixtures.iter().find(|f| f.id == fixture_id) {
-                    let channel = fixture.start_channel;
-                    if let Some(existing) = state.buffer.iter_mut().find(|v| v.chan == channel) {
-                        existing.dmx = value;
-                    } else {
-                        state.buffer.push(DMXBufferValue {
-                            chan: channel,
-                            dmx: value,
+                if let Some(fixture) = state.fixtures.iter_mut().find(|f| f.id == fixture_id) {
+                    fixture.intensity = value;
+                    if let Some(fixture_template) =
+                        state.template_library.get_template(fixture.template_id)
+                    {
+                        let values = fixture.get_fixture_as_buffer(fixture_template);
+
+                        let has_color = fixture.color.has_color();
+
+                        let channels_to_dim: Vec<DMXBufferValue> = values
+                            .iter()
+                            .filter_map(|(chan_type, buf)| {
+                                if has_color {
+                                    if chan_type.is(ChannelType::Intensity) {
+                                        Some(buf.clone())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    if chan_type.is(ChannelType::Intensity) {
+                                        Some(buf.clone())
+                                    } else if chan_type.is(ChannelType::White) {
+                                        fixture.color.w = value;
+                                        Some(buf.clone())
+                                    } else {
+                                        None
+                                    }
+                                }
+                            })
+                            .collect();
+
+                        channels_to_dim.iter().for_each(|buf| {
+                            if let Some(existing) =
+                                state.buffer.iter_mut().find(|v| v.chan == buf.chan)
+                            {
+                                existing.dmx = value;
+                            } else {
+                                state.buffer.push(DMXBufferValue::new(buf.chan, value));
+                            }
                         });
+                    } else {
+                        let channel = fixture.start_channel;
+                        if let Some(existing) = state.buffer.iter_mut().find(|v| v.chan == channel)
+                        {
+                            existing.dmx = value;
+                        } else {
+                            state.buffer.push(DMXBufferValue::new(channel, value));
+                        }
                     }
+
                     state.command_history.push(cmd);
+                } else {
+                    state.command_error = Some(format!("Fixture {fixture_id} not found"));
+                }
+            }
+            ConsoleCommand::SetFixtureColor {
+                fixture_id,
+                r,
+                g,
+                b,
+                w,
+            } => {
+                if let Some(fixture) = state.fixtures.iter_mut().find(|f| f.id == fixture_id) {
+                    if let Some(fixture_template) =
+                        state.template_library.get_template(fixture.template_id)
+                    {
+                        let values = fixture.get_fixture_as_buffer(fixture_template);
+
+                        for (chan_type, buf) in &values {
+                            if matches!(
+                                chan_type,
+                                ChannelType::Red
+                                    | ChannelType::Green
+                                    | ChannelType::Blue
+                                    | ChannelType::White
+                            ) {
+                                let new_value = match chan_type {
+                                    ChannelType::Red => r,
+                                    ChannelType::Green => g,
+                                    ChannelType::Blue => b,
+                                    ChannelType::White => w,
+                                    _ => continue,
+                                };
+                                if let Some(existing) =
+                                    state.buffer.iter_mut().find(|v| v.chan == buf.chan)
+                                {
+                                    existing.dmx = new_value;
+                                } else {
+                                    state.buffer.push(DMXBufferValue::new(buf.chan, new_value));
+                                }
+                            }
+                        }
+
+                        fixture.color.r = r;
+                        fixture.color.g = g;
+                        fixture.color.b = b;
+                        fixture.color.w = w;
+
+                        state.command_history.push(cmd);
+                    }
                 } else {
                     state.command_error = Some(format!("Fixture {fixture_id} not found"));
                 }
@@ -154,14 +259,16 @@ pub fn execute_console_command(state: &mut crate::ConsoleState) {
                 exec_to,
                 cue_to,
             } => {
-                let exec = &mut state.executors[exec_from.saturating_sub(1)];
+                let exec_idx_from = (exec_from.saturating_sub(1)) as usize;
+                let exec_idx_to = (exec_to.saturating_sub(1)) as usize;
+                let exec = &mut state.executors[exec_idx_from];
                 let cue_from_idx = exec
                     .cue_list
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, c)| if c.id == cue_from { Some(idx) } else { None })
                     .next();
-                let exec = &mut state.executors[exec_to.saturating_sub(1)];
+                let exec = &mut state.executors[exec_idx_to];
                 let cue_to_idx = exec
                     .cue_list
                     .iter()
@@ -172,19 +279,15 @@ pub fn execute_console_command(state: &mut crate::ConsoleState) {
                 if let Some(idx_from) = cue_from_idx {
                     if let Some(idx_to) = cue_to_idx {
                         if exec_from == exec_to {
-                            state.executors[exec_from.saturating_sub(1)]
+                            state.executors[exec_idx_from]
                                 .cue_list
                                 .swap(idx_from, idx_to);
                         } else {
-                            let cue = state.executors[exec_from.saturating_sub(1)]
-                                .cue_list
-                                .remove(idx_from);
-                            let to_move = state.executors[exec_to.saturating_sub(1)]
-                                .cue_list
-                                .remove(idx_to);
+                            let cue = state.executors[exec_idx_from].cue_list.remove(idx_from);
+                            let to_move = state.executors[exec_idx_to].cue_list.remove(idx_to);
                             let mut found_same = false;
                             // Prevent having same Cue ids from two different executors
-                            state.executors[exec_to.saturating_sub(1)]
+                            state.executors[exec_idx_to]
                                 .cue_list
                                 .iter_mut()
                                 .for_each(|c| {
@@ -197,7 +300,7 @@ pub fn execute_console_command(state: &mut crate::ConsoleState) {
                                 });
                             let mut found_same = false;
                             // Prevent having same Cue ids from two different executors
-                            state.executors[exec_from.saturating_sub(1)]
+                            state.executors[exec_idx_from]
                                 .cue_list
                                 .iter_mut()
                                 .for_each(|c| {
@@ -208,22 +311,18 @@ pub fn execute_console_command(state: &mut crate::ConsoleState) {
                                         c.id += 1;
                                     }
                                 });
-                            state.executors[exec_from.saturating_sub(1)]
+                            state.executors[exec_idx_from]
                                 .cue_list
                                 .insert(idx_from, to_move);
-                            state.executors[exec_to.saturating_sub(1)]
-                                .cue_list
-                                .insert(idx_to, cue);
+                            state.executors[exec_idx_to].cue_list.insert(idx_to, cue);
                         }
                     } else {
-                        let cue = state.executors[exec_from.saturating_sub(1)]
-                            .cue_list
-                            .remove(idx_from);
-                        let cue_size = state.executors[exec_to.saturating_sub(1)].cue_list.len();
+                        let cue = state.executors[exec_idx_from].cue_list.remove(idx_from);
+                        let cue_size = state.executors[exec_idx_to].cue_list.len();
                         if cue_size > 0 {
                             let mut found_same = false;
                             // Prevent having same Cue ids from two different executors
-                            state.executors[exec_to.saturating_sub(1)]
+                            state.executors[exec_idx_to]
                                 .cue_list
                                 .iter_mut()
                                 .for_each(|c| {
@@ -234,13 +333,11 @@ pub fn execute_console_command(state: &mut crate::ConsoleState) {
                                         c.id += 1;
                                     }
                                 });
-                            state.executors[exec_to.saturating_sub(1)]
+                            state.executors[exec_idx_to]
                                 .cue_list
-                                .insert(cue_to.saturating_sub(1), cue);
+                                .insert((cue_to.saturating_sub(1)) as usize, cue);
                         } else {
-                            state.executors[exec_to.saturating_sub(1)]
-                                .cue_list
-                                .push(cue);
+                            state.executors[exec_idx_to].cue_list.push(cue);
                         }
                     }
                 }
@@ -278,8 +375,9 @@ pub fn execute_console_command(state: &mut crate::ConsoleState) {
                 cue_from,
                 direction,
             } => {
-                let cue_size = state.executors[exec_from.saturating_sub(1)].cue_list.len();
-                if let Some(exec) = state.executors.get_mut(exec_from.saturating_sub(1)) {
+                let exec_idx = (exec_from.saturating_sub(1)) as usize;
+                let cue_size = state.executors[exec_idx].cue_list.len();
+                if let Some(exec) = state.executors.get_mut(exec_idx) {
                     let idx = exec
                         .cue_list
                         .iter()

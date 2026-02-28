@@ -8,10 +8,15 @@ pub fn mix_executor_outputs(state: &mut crate::ui::ConsoleState) {
         exec.update_fade();
         if exec.fader_level > 0.0 {
             if let Some(current_cue) = &exec.cue_list.get(exec.current_cue_index) {
-                current_cue.levels.iter().enumerate().for_each(|(idx, l)| {
-                    dmx_chans[idx.saturating_sub(1)] =
-                        ((*l as f32 * exec.current_output_level) * state.master_dimmer) as u8;
-                });
+                current_cue
+                    .levels
+                    .iter()
+                    .enumerate()
+                    .for_each(|(idx, cue_dmx_level)| {
+                        dmx_chans[idx.saturating_sub(1)] = ((*cue_dmx_level as f32 * exec.current_output_level) // this needs to be interpolated with the value of the last cue so if the last cue was chan 5 at 150 and current is at 20, we interpolate from 150 to 20
+                                * state.master_dimmer)
+                            as u8;
+                    });
             }
         }
     });
@@ -22,8 +27,15 @@ pub fn mix_executor_outputs(state: &mut crate::ui::ConsoleState) {
             *chan = v.dmx;
         }
     });
+
+    if dmx_chans.to_vec() != state.channels {
+        state.channels = dmx_chans.to_vec().clone();
+        println!("Channels updated");
+        if let Some(dmx) = &mut state.dmx_serial {
+            dmx.set_channels(dmx_chans);
+        }
+    }
     if let Some(dmx) = &mut state.dmx_serial {
-        dmx.set_channels(dmx_chans);
         // Set the serial state
         match dmx.check_agent() {
             Ok(()) => state.dmx_connected = true,

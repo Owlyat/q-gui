@@ -28,6 +28,7 @@ pub enum FixturesTab {
     Creation,
     Grouping,
     Editing,
+    List,
 }
 
 #[derive(Debug, Default, PartialEq, Clone, Copy)]
@@ -100,7 +101,7 @@ pub struct ConsoleState {
     /// Buffer containing pending DMX values before storing to a cue
     pub buffer: Vec<DMXBufferValue>,
     /// Index of cue being labeled (if any)
-    pub labeling_cue: Option<usize>,
+    pub labeling_cue: Option<u32>,
     /// Temporary name buffer for labeling
     pub label_buffer: String,
     /// Index of executor currently being edited (if any)
@@ -128,9 +129,11 @@ pub struct ConsoleState {
     /// Selected mode index for new fixture
     pub selected_mode_index: usize,
     /// IDs of fixtures currently selected for grouping
-    pub selected_fixture_ids: Vec<usize>,
+    pub selected_fixture_ids: Vec<u32>,
     /// ID of currently selected fixture group (if any)
     pub selected_group_id: Option<u32>,
+    /// ID of currently selected fixture for editing (in List tab)
+    pub selected_fixture_id: Option<u32>,
     /// Input field for new fixture name
     pub new_fixture_name: String,
     /// Input field for new fixture start channel
@@ -194,6 +197,7 @@ impl Default for ConsoleState {
             selected_mode_index: Default::default(),
             selected_fixture_ids: Default::default(),
             selected_group_id: None,
+            selected_fixture_id: None,
             new_fixture_name: Default::default(),
             new_fixture_start_channel: Default::default(),
             new_group_name: Default::default(),
@@ -205,7 +209,13 @@ impl Default for ConsoleState {
             selected_audio_track_id: Default::default(),
             audio_index: Default::default(),
             audio_engine: crate::audio::AudioEngine::new().ok(),
-            dmx_serial: open_dmx::DMXSerial::open(port).ok(),
+            dmx_serial: {
+                let mut serial = open_dmx::DMXSerial::open(port).ok();
+                if let Some(dmx) = &mut serial {
+                    dmx.set_sync();
+                }
+                serial
+            },
             dmx_connected: Default::default(),
             dmx_serial_error: Default::default(),
             edit_state: Default::default(),
@@ -279,7 +289,8 @@ pub fn show_executor_panel_content(ui: &mut egui::Ui, state: &mut ConsoleState) 
                                     levels[val.chan] = val.dmx;
                                 }
                             }
-                            let mut new_cue = Cue::new(exec.cue_list.len().saturating_add(1));
+                            let mut new_cue =
+                                Cue::new(exec.cue_list.len().saturating_add(1) as u32);
                             new_cue.levels = levels;
                             exec.cue_list.push(new_cue);
                             state.edit_state.reset();
@@ -614,12 +625,13 @@ fn show_sidebar_master_fader(ctx: &egui::Context, state: &mut ConsoleState) {
 fn show_command_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
     let active_size = Vec2::new(120.0, 35.0);
     let normal_size = Vec2::new(80.0, 35.0);
-    let clear_button =
-        egui::Button::new("Clear").fill(if !state.buffer.is_empty() | state.edit_state.if_any() {
+    let clear_button = egui::Button::new("Clear").fill(
+        if !state.buffer.is_empty() | state.edit_state.if_any() | !state.command_input.is_empty() {
             Color32::DARK_RED
         } else {
             Color32::GRAY
-        });
+        },
+    );
 
     let store_button = egui::Button::new("Store").fill(Color32::from_rgb(0, 100, 200));
     let store_active = egui::Button::new("Store (ACTIVE)").fill(Color32::from_rgb(0, 150, 255));
@@ -793,8 +805,10 @@ fn show_command_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
             if !state.buffer.is_empty() {
                 state.command_history.push(ConsoleCommand::Clear);
                 state.buffer.clear();
-            } else {
+            } else if state.edit_state.if_any() {
                 state.edit_state.reset();
+            } else if !state.command_input.is_empty() {
+                state.command_input.clear();
             }
         }
     });
@@ -817,9 +831,13 @@ fn show_command_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
             }
             EditingState::Delete => {
                 ui.label(
-                    RichText::new("Click an executor to delete all its cues")
-                        .small()
-                        .color(Color32::LIGHT_RED),
+                    RichText::new(if state.editing_executor.is_some() {
+                        "Click a cue to delete"
+                    } else {
+                        "Click an executor to delete all its cues"
+                    })
+                    .small()
+                    .color(Color32::LIGHT_RED),
                 );
             }
             EditingState::Label => {
@@ -883,7 +901,6 @@ fn show_edit_executor_panel(ctx: &egui::Context, state: &mut ConsoleState, exec_
             ui.heading(format!("Executor {} - Cue List", exec_idx + 1));
             ui.separator();
 
-            // V2
             if let Some(executor) = state.executors.get_mut(exec_idx) {
                 if executor.cue_list.is_empty() {
                     ui.label("No cues in this executor.");
@@ -971,6 +988,11 @@ fn show_edit_executor_panel(ctx: &egui::Context, state: &mut ConsoleState, exec_
                                             state.labeling_cue = Some(cue.id);
                                         }
                                     }
+                                    ui.add_sized(
+                                        Vec2::new(120.0, 35.0),
+                                        egui::DragValue::new(&mut cue.fade_time)
+                                            .range(0.0..=f32::MAX),
+                                    );
                                 });
                             });
                         });
@@ -1093,6 +1115,7 @@ pub fn show_fixtures_tab_content(ui: &mut egui::Ui, state: &mut ConsoleState) {
         ui.selectable_value(&mut state.fixtures_tab, FixturesTab::Creation, "Creation");
         ui.selectable_value(&mut state.fixtures_tab, FixturesTab::Grouping, "Grouping");
         ui.selectable_value(&mut state.fixtures_tab, FixturesTab::Editing, "Editing");
+        ui.selectable_value(&mut state.fixtures_tab, FixturesTab::List, "List");
     });
     ui.separator();
 
@@ -1224,7 +1247,7 @@ pub fn show_fixtures_tab_content(ui: &mut egui::Ui, state: &mut ConsoleState) {
                     {
                         let new_id = state.fixtures.len() + 1;
                         let fixture = Fixture::new(
-                            new_id,
+                            new_id as u32,
                             state.new_fixture_name.clone(),
                             start_ch,
                             template_id,
@@ -1274,12 +1297,12 @@ pub fn show_fixtures_tab_content(ui: &mut egui::Ui, state: &mut ConsoleState) {
                                 fixture.start_channel
                             ));
                             if ui.button("✕").clicked() {
-                                to_remove = Some(fixture.id);
+                                to_remove = Some(fixture.id as usize);
                             }
                         });
                     }
                     if let Some(id) = to_remove {
-                        state.fixtures.retain(|f| f.id != id);
+                        state.fixtures.retain(|f| f.id as u32 != id as u32);
                     }
                 });
         }
@@ -1346,8 +1369,8 @@ pub fn show_fixtures_tab_content(ui: &mut egui::Ui, state: &mut ConsoleState) {
 
                             if ui.button("Add Selected").clicked() {
                                 for &fix_id in &state.selected_fixture_ids {
-                                    if !group.fixture_ids.contains(&fix_id) {
-                                        group.fixture_ids.push(fix_id);
+                                    if !group.fixture_ids.contains(&(fix_id as u32)) {
+                                        group.fixture_ids.push(fix_id as u32);
                                     }
                                 }
                             }
@@ -1428,9 +1451,122 @@ pub fn show_fixtures_tab_content(ui: &mut egui::Ui, state: &mut ConsoleState) {
                 });
         }
         FixturesTab::Editing => {
-            ui.heading("Editing");
+            ui.heading("Edit Fixture");
             ui.separator();
-            ui.label("Editing features coming soon...");
+
+            if let Some(fix_id) = state.selected_fixture_id {
+                let mut exec_command = false;
+                if let Some(fixture) = state.fixtures.iter_mut().find(|f| f.id == fix_id) {
+                    ui.label(format!("Fixture: {} (ID: {})", fixture.name, fixture.id));
+                    ui.label(format!("Start Channel: {}", fixture.start_channel));
+
+                    let template = state.template_library.get_template(fixture.template_id);
+                    if let Some(tmpl) = template {
+                        if let Some(mode) = tmpl.get_mode(fixture.mode_index) {
+                            ui.label(format!("Mode: {}", mode.name));
+                        }
+                    }
+                    ui.label("Dimmer");
+                    let slider = egui::Slider::new(&mut fixture.intensity, 0..=u8::MAX);
+                    if ui.add_sized(Vec2::new(120.0, 35.0), slider).changed() {
+                        state.command_input = format!("Fix {fix_id} at {}", fixture.intensity);
+                        exec_command = true;
+                    }
+
+                    ui.separator();
+                    ui.heading("Color");
+
+                    ui.label("White");
+                    let slider = egui::Slider::new(&mut fixture.color.w, 0..=u8::MAX);
+                    if ui.add_sized(Vec2::new(120.0, 35.0), slider).changed() {
+                        let r = fixture.color.r;
+                        let g = fixture.color.g;
+                        let b = fixture.color.b;
+                        let w = fixture.color.w;
+                        state.command_input = format!("Fix {fix_id} Color R{r} G{g} B{b} W{w}");
+                        exec_command = true;
+                    }
+                    let mut color32 =
+                        Color32::from_rgb(fixture.color.r, fixture.color.g, fixture.color.b);
+                    if ui.color_edit_button_srgba(&mut color32).changed() {
+                        let r = color32.r();
+                        let g = color32.g();
+                        let b = color32.b();
+                        let w = fixture.color.w;
+
+                        ui.label(format!("R: {r} G: {g} B: {b} W: {w}"));
+
+                        let color_cmd = format!("Color R{r} G{g} B{b} W{w}");
+
+                        state.command_input = format!("Fix {fix_id} {color_cmd}");
+                        exec_command = true;
+                    }
+                } else {
+                    ui.label("Fixture not found. Select a fixture from the List tab.");
+                }
+                if exec_command {
+                    execute_console_command(state);
+                    state.command_input.clear();
+                }
+            } else {
+                ui.label("No fixture selected. Select a fixture from the List tab.");
+            }
+        }
+        FixturesTab::List => {
+            ui.heading("Fixture List");
+            ui.separator();
+
+            ScrollArea::vertical()
+                .id_salt("fixture_list")
+                .max_height(400.0)
+                .show(ui, |ui| {
+                    for fixture in &state.fixtures {
+                        let template_name = state
+                            .template_library
+                            .get_template(fixture.template_id)
+                            .map(|t| t.name.clone())
+                            .unwrap_or_else(|| "Unknown".to_string());
+
+                        let is_selected = state.selected_fixture_id == Some(fixture.id);
+
+                        let btn = if is_selected {
+                            egui::Button::new(
+                                RichText::new(format!(
+                                    "{} (Ch {})",
+                                    fixture.name, fixture.start_channel
+                                ))
+                                .color(Color32::WHITE),
+                            )
+                            .fill(Color32::from_rgb(0, 100, 200))
+                        } else {
+                            egui::Button::new(format!(
+                                "{} (Ch {})",
+                                fixture.name, fixture.start_channel
+                            ))
+                        };
+
+                        if ui.add_sized(Vec2::new(200.0, 30.0), btn).clicked() {
+                            if !is_selected {
+                                state.selected_fixture_id = Some(fixture.id);
+                                state.command_input = format!("Fix {}", fixture.id);
+                            } else {
+                                state.selected_fixture_id = None;
+                                state.command_input = state
+                                    .command_input
+                                    .replace(&format!("Fix {}", fixture.id), "");
+                            }
+                        }
+
+                        ui.label(RichText::new(template_name).small().weak());
+                    }
+                });
+
+            ui.separator();
+            if let Some(fix_id) = state.selected_fixture_id {
+                ui.label(
+                    RichText::new(format!("Selected: Fixture {}", fix_id)).color(Color32::GREEN),
+                );
+            }
         }
     }
 }
