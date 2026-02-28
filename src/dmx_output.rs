@@ -1,4 +1,4 @@
-use crate::dmx_types::DMX_CHANNELS;
+use crate::dmx_types::{FadeDirection, DMX_CHANNELS};
 
 pub fn mix_executor_outputs(state: &mut crate::ui::ConsoleState) {
     let mut dmx_chans = [0u8; DMX_CHANNELS];
@@ -8,15 +8,56 @@ pub fn mix_executor_outputs(state: &mut crate::ui::ConsoleState) {
         exec.update_fade();
         if exec.fader_level > 0.0 {
             if let Some(current_cue) = &exec.cue_list.get(exec.current_cue_index) {
-                current_cue
-                    .levels
-                    .iter()
-                    .enumerate()
-                    .for_each(|(idx, cue_dmx_level)| {
-                        dmx_chans[idx.saturating_sub(1)] = ((*cue_dmx_level as f32 * exec.current_output_level) // this needs to be interpolated with the value of the last cue so if the last cue was chan 5 at 150 and current is at 20, we interpolate from 150 to 20
+                // Check if we should interpolate (fading and direction is set)
+                if exec.is_fading {
+                    if let Some(direction) = exec.last_direction {
+                        // Calculate previous cue index based on direction
+                        let prev_cue_idx = match direction {
+                            FadeDirection::Positive => {
+                                (exec.current_cue_index + exec.cue_list.len() - 1)
+                                    % exec.cue_list.len()
+                            }
+                            FadeDirection::Negative => {
+                                (exec.current_cue_index + 1) % exec.cue_list.len()
+                            }
+                        };
+
+                        if let Some(prev_cue) = exec.cue_list.get(prev_cue_idx) {
+                            let progress = exec.current_output_level;
+
+                            for (idx, cue_dmx_level) in current_cue.levels.iter().enumerate() {
+                                let prev_level = prev_cue.levels[idx] as f32;
+                                let curr_level = *cue_dmx_level as f32;
+                                let interpolated =
+                                    prev_level + (curr_level - prev_level) * progress;
+                                dmx_chans[idx] = (interpolated * state.master_dimmer) as u8;
+                            }
+                        }
+                    } else {
+                        // No direction set - use current cue directly (no interpolation)
+                        current_cue
+                            .levels
+                            .iter()
+                            .enumerate()
+                            .for_each(|(idx, cue_dmx_level)| {
+                                dmx_chans[idx] = ((*cue_dmx_level as f32
+                                    * exec.current_output_level)
+                                    * state.master_dimmer)
+                                    as u8;
+                            });
+                    }
+                } else {
+                    // Not fading - use current cue directly
+                    current_cue
+                        .levels
+                        .iter()
+                        .enumerate()
+                        .for_each(|(idx, cue_dmx_level)| {
+                            dmx_chans[idx] = ((*cue_dmx_level as f32 * exec.current_output_level)
                                 * state.master_dimmer)
-                            as u8;
-                    });
+                                as u8;
+                        });
+                }
             }
         }
     });

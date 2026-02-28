@@ -863,6 +863,15 @@ impl DMXBufferValue {
         Self { chan, dmx: val }
     }
 }
+
+/// Direction of cue change for crossfade interpolation
+#[derive(Clone, Copy, Debug, Default)]
+pub enum FadeDirection {
+    #[default]
+    Positive, // Go button - interpolate backwards
+    Negative, // Go Back button - interpolate forwards
+}
+
 /// Represents an executor that controls playback of cues with a fader.
 /// Executors are the playback section of a lighting console - each has:
 /// - A list of cues that can be stepped through
@@ -894,6 +903,8 @@ pub struct Executor {
     pub is_fading: bool,
     /// Last fader level (for detecting fader movements)
     pub last_fader_level: f32,
+    /// Direction of last cue change (for interpolation)
+    pub last_direction: Option<FadeDirection>,
 }
 
 impl Executor {
@@ -911,6 +922,7 @@ impl Executor {
             fade_start_time: Default::default(),
             is_fading: Default::default(),
             last_fader_level: Default::default(),
+            last_direction: None,
         }
     }
 
@@ -923,6 +935,7 @@ impl Executor {
         self.stored_channels = self.cue_list[self.current_cue_index].levels.clone();
         self.target_level = self.fader_level;
         self.is_fading = true;
+        self.last_direction = Some(FadeDirection::Positive);
         self.fade_start_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -939,6 +952,7 @@ impl Executor {
         self.stored_channels = self.cue_list[self.current_cue_index].levels.clone();
         self.target_level = self.fader_level;
         self.is_fading = true;
+        self.last_direction = Some(FadeDirection::Negative);
         self.fade_start_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

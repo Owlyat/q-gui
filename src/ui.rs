@@ -110,6 +110,8 @@ pub struct ConsoleState {
     pub delete_confirm_executor: Option<usize>,
     /// Whether the buffer popup window is visible
     pub show_buffer: bool,
+    /// Whether the channels popup window is visible
+    pub show_channels: bool,
     /// List of executors (playback faders with cue lists)
     pub executors: Vec<Executor>,
     /// Currently selected main tab
@@ -186,6 +188,7 @@ impl Default for ConsoleState {
             editing_executor: Default::default(),
             delete_confirm_executor: Default::default(),
             show_buffer: Default::default(),
+            show_channels: Default::default(),
             executors: (0..10).map(Executor::new).collect(),
             selected_tab: Default::default(),
             dmx_sub_tab: Default::default(),
@@ -286,7 +289,7 @@ pub fn show_executor_panel_content(ui: &mut egui::Ui, state: &mut ConsoleState) 
                             let mut levels = vec![0; DMX_CHANNELS];
                             for val in &state.buffer {
                                 if check_valid_channel(val.chan).is_ok() {
-                                    levels[val.chan] = val.dmx;
+                                    levels[val.chan.saturating_sub(1)] = val.dmx;
                                 }
                             }
                             let mut new_cue =
@@ -381,6 +384,8 @@ pub fn show_dmx_console<'a>(ctx: &egui::Context, state: &mut ConsoleState) {
         ui.separator();
 
         show_buffer_list(ctx, state);
+
+        show_channels_list(ctx, state);
 
         ui.separator();
 
@@ -580,6 +585,29 @@ fn show_buffer_list(ctx: &egui::Context, state: &mut ConsoleState) {
     }
 }
 
+fn show_channels_list(ctx: &egui::Context, state: &mut ConsoleState) {
+    if state.show_channels {
+        egui::Window::new("Channels")
+            .collapsible(true)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.heading("DMX Output Channels");
+                ui.separator();
+
+                ScrollArea::vertical().max_height(500.0).show(ui, |ui| {
+                    for (idx, &value) in state.channels.iter().enumerate() {
+                        if value > 0 {
+                            ui.label(
+                                RichText::new(format!("Ch {}: {}", idx + 1, value)).monospace(),
+                            );
+                        }
+                    }
+                });
+            });
+    }
+}
+
 fn show_dmx_status(state: &mut ConsoleState, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.heading("DMX Status:");
@@ -663,6 +691,9 @@ fn show_command_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
         } else {
             Color32::DARK_BLUE
         });
+
+    let channels_button = egui::Button::new(RichText::new("Channels").color(Color32::WHITE))
+        .fill(Color32::from_rgb(100, 100, 100));
 
     ui.horizontal(|ui| {
         let size = if state.edit_state.is_store() {
@@ -797,8 +828,12 @@ fn show_command_button(state: &mut ConsoleState, ui: &mut egui::Ui) {
             }
         }
 
-        if ui.add_sized(active_size, buffer_button).clicked() {
+        if ui.add_sized(normal_size, buffer_button).clicked() {
             state.show_buffer = !state.show_buffer;
+        }
+
+        if ui.add_sized(normal_size, channels_button).clicked() {
+            state.show_channels = !state.show_channels;
         }
 
         if ui.add_sized(normal_size, clear_button).clicked() {
@@ -879,6 +914,7 @@ fn show_confirm_prompt_panel(ctx: &egui::Context, state: &mut ConsoleState, exec
                     state.executors[exec_idx].cue_list.clear();
                     state.executors[exec_idx].current_cue = None;
                     state.executors[exec_idx].current_cue_index = 0;
+                    state.executors[exec_idx].fader_level = 0.0;
                     state.executors[exec_idx].stored_channels = vec![0; DMX_CHANNELS];
                     state.delete_confirm_executor = None;
                     state.edit_state.set(EditingState::None);
